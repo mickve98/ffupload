@@ -1,0 +1,31 @@
+name: Send to plate
+version: "2.0.0"
+slug: ffupload
+description: Slice models and send them to a FlashForge Adventurer 5M from your phone
+url: https://github.com/local/ffupload
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+ingress: true
+ingress_port: 5005
+panel_icon: mdi:printer-3d-nozzle
+panel_title: Send to plate
+panel_admin: false
+options:
+  printer_host: "192.168.2.145"
+  printer_serial: "SNMQLE9C23660"
+  printer_checkcode: ""
+  max_upload_mb: 512
+  default_material: pla
+  default_quality: standard
+  default_infill: 15
+schema:
+  printer_host: str
+  printer_serial: str?
+  printer_checkcode: str?
+  max_upload_mb: int(16,2048)
+  default_material: list(pla|petg|tpu)
+  default_quality: list(draft|standard|fine)
+  default_infill: int(0,100)

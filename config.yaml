@@ -1,5 +1,5 @@
 name: Send to plate
-version: "2.0.0"
+version: "2.1.0"
 slug: ffupload
 description: Slice models and send them to a FlashForge Adventurer 5M from your phone
 url: https://github.com/local/ffupload

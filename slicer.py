@@ -107,7 +107,9 @@ def slice_model(model_path, quality="standard", material="pla",
     cmd = [BINARY, "--export-gcode", "--load", PROFILE,
            "--output", out_path, "--center", "110,110"]
     for key, value in _overrides(quality, material, infill, supports, brim).items():
-        cmd += [f"--{key.replace('_', '-')}", value]
+        # PrusaSlicer treats a bare "--support-material 1" as a second input
+        # file, so every option goes across as --key=value.
+        cmd.append(f"--{key.replace('_', '-')}={value}")
     cmd.append(model_path)
 
     try:

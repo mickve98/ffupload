@@ -15,6 +15,7 @@ from flask import Flask, request, jsonify, render_template_string
 
 from printer import FlashForgePrinter, PrinterError
 import slicer
+import preview
 
 app = Flask(__name__)
 
@@ -128,6 +129,29 @@ def slice_status(job_id):
     })
 
 
+_preview_cache = {}
+
+
+@app.get("/api/preview/<job_id>")
+def job_preview(job_id):
+    job = jobs.get(job_id)
+    if not job or job["state"] != "done" or not job["gcode"]:
+        return jsonify({"ok": False, "error": "Nothing sliced to preview."}), 400
+
+    if job_id not in _preview_cache:
+        try:
+            _preview_cache[job_id] = preview.parse(job["gcode"])
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Couldn't read the toolpaths: {exc}"}), 500
+        # only hold on to a couple of these, they're chunky
+        while len(_preview_cache) > 3:
+            _preview_cache.pop(next(iter(_preview_cache)))
+
+    data = dict(_preview_cache[job_id])
+    data["ok"] = True
+    return jsonify(data)
+
+
 @app.post("/api/send/<job_id>")
 def send_job(job_id):
     job = jobs.get(job_id)
@@ -227,6 +251,16 @@ h1{font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0}
   border-left:1px solid var(--hot);border-bottom:1px solid var(--hot);opacity:.6}
 .bed{position:absolute;bottom:7px;right:9px;font-family:'JetBrains Mono',monospace;
   font-size:9px;letter-spacing:.14em;color:var(--mute);opacity:.55}
+.plate.preview{aspect-ratio:1/1;cursor:default;border-color:var(--edge)}
+.plate.preview .inner{display:none}
+#canvas{position:absolute;inset:0;width:100%;height:100%;display:none}
+.plate.preview #canvas{display:block}
+.layerbar{display:none;margin-top:14px;align-items:center;gap:13px}
+.layerbar.on{display:flex}
+.layerbar input[type=range]{flex:1;accent-color:var(--hot)}
+.layerbar .lz{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--mute);
+  min-width:78px;text-align:right;line-height:1.4}
+.layerbar .lz b{display:block;color:var(--text);font-weight:600;font-size:13px}
 .inner{padding:20px;pointer-events:none}
 .inner strong{display:block;font-size:15px;font-weight:600;margin-bottom:5px}
 .inner span{font-size:12.5px;color:var(--mute)}
@@ -304,9 +338,16 @@ button.ghost{background:transparent;border:1px solid var(--edge);color:var(--tex
     <strong>Drop a model or gcode</strong>
     <span>{% if can_slice %}.stl, .3mf, .obj, .step{% else %}slicing unavailable{% endif %} &middot; .gcode, .gx</span>
   </div>
+  <canvas id="canvas"></canvas>
   <div class="bed">220 &times; 220</div>
 </div>
-<input type="file" id="file" accept=".stl,.3mf,.obj,.step,.stp,.gcode,.gx">
+
+<div class="layerbar" id="layerbar">
+  <input type="range" id="layer" min="0" max="0" value="0" aria-label="Layer">
+  <div class="lz"><b id="lznum">&mdash;</b><span id="lzh"></span></div>
+</div>
+
+<input type="file" id="file">
 
 <div class="opts hide" id="sliceopts">
   <div class="field">
@@ -421,6 +462,7 @@ function accept(f){
   $("inner").querySelector(".fname").textContent = f.name;
   $("sliceopts").classList.toggle("hide", !model);
   $("est").classList.remove("on");
+  clearPreview();
   $("reset").style.display = "none";
   $("go").disabled = false;
   $("go").textContent = model ? "Slice it" : "Send to printer";
@@ -446,6 +488,7 @@ $("reset").onclick = () => {
   $("inner").innerHTML = '<strong>Drop a model or gcode</strong><span>.stl, .3mf, .obj, .step &middot; .gcode, .gx</span>';
   $("sliceopts").classList.add("hide");
   $("est").classList.remove("on");
+  clearPreview();
   $("reset").style.display = "none";
   $("go").disabled = true;
   $("go").textContent = "Choose a file first";
@@ -510,6 +553,92 @@ async function doSlice(){
   });
 }
 
+// ---- toolpath preview -------------------------------------------------
+let pv = null;                 // {layers:[{z,s:[...]}], bed}
+const cv = $("canvas");
+const ctx = cv.getContext("2d");
+
+function sizeCanvas(){
+  const r = cv.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(r.width * dpr);
+  cv.height = Math.round(r.height * dpr);
+}
+
+function drawLayers(upto){
+  if(!pv || !pv.layers.length) return;
+  sizeCanvas();
+  const W = cv.width, H = cv.height, bed = pv.bed || 220;
+  const pad = Math.round(Math.min(W,H) * 0.04);
+  const scale = (Math.min(W,H) - pad*2) / bed;
+  const ox = (W - bed*scale)/2, oy = (H - bed*scale)/2;
+
+  ctx.clearRect(0,0,W,H);
+
+  // Y is flipped: gcode origin is front-left, canvas origin is top-left.
+  const px = v => ox + v*scale;
+  const py = v => oy + (bed - v)*scale;
+
+  // layers below the current one, faint, so you get a sense of the solid
+  const from = Math.max(0, upto - 28);
+  for(let i = from; i < upto; i++){
+    const t = (i - from + 1) / (upto - from + 1);
+    ctx.strokeStyle = "rgba(125,141,161," + (0.06 + t*0.22).toFixed(3) + ")";
+    ctx.lineWidth = Math.max(1, scale*0.42);
+    ctx.beginPath();
+    const s = pv.layers[i].s;
+    for(let k = 0; k < s.length; k += 4){
+      ctx.moveTo(px(s[k]), py(s[k+1]));
+      ctx.lineTo(px(s[k+2]), py(s[k+3]));
+    }
+    ctx.stroke();
+  }
+
+  // the current layer, in full colour
+  ctx.strokeStyle = "#ff9e2c";
+  ctx.lineWidth = Math.max(1.2, scale*0.55);
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  const s = pv.layers[upto].s;
+  for(let k = 0; k < s.length; k += 4){
+    ctx.moveTo(px(s[k]), py(s[k+1]));
+    ctx.lineTo(px(s[k+2]), py(s[k+3]));
+  }
+  ctx.stroke();
+}
+
+function showLayer(i){
+  if(!pv) return;
+  drawLayers(i);
+  $("lznum").textContent = (i+1) + " / " + pv.layers.length;
+  $("lzh").textContent = "z " + pv.layers[i].z.toFixed(2) + " mm";
+}
+
+async function loadPreview(id){
+  try {
+    const d = await (await fetch(BASE + "api/preview/" + id)).json();
+    if(!d.ok || !d.layers.length) return;
+    pv = d;
+    const top = d.layers.length - 1;
+    $("layer").max = top;
+    $("layer").value = top;
+    $("plate").classList.add("preview");
+    $("layerbar").classList.add("on");
+    showLayer(top);
+    if(d.truncated) say("Preview simplified for speed — the gcode itself is complete.", "");
+  } catch(_){ /* preview is a nicety, never block the send */ }
+}
+
+$("layer").oninput = e => showLayer(+e.target.value);
+window.addEventListener("resize", () => { if(pv) showLayer(+$("layer").value); });
+
+function clearPreview(){
+  pv = null;
+  $("plate").classList.remove("preview");
+  $("layerbar").classList.remove("on");
+  ctx.clearRect(0,0,cv.width,cv.height);
+}
+
 function showEstimates(e){
   $("esttime").textContent = e.time || "—";
   $("estfil").textContent = e.filament_g ? e.filament_g.toFixed(1) + " g" : "—";
@@ -522,6 +651,7 @@ $("go").onclick = async () => {
     if(isModel && !jobId){
       const est = await doSlice();
       showEstimates(est);
+      await loadPreview(jobId);
       busy(false, "Send to printer");
       $("reset").style.display = "block";
       say("Sliced and ready.", "good");

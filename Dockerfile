@@ -16,7 +16,7 @@ RUN python3 -m venv /opt/venv \
 
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY printer.py slicer.py app.py /opt/ffupload/
+COPY printer.py slicer.py preview.py app.py /opt/ffupload/
 COPY profiles /opt/ffupload/profiles
 COPY run.sh /
 RUN chmod a+x /run.sh
